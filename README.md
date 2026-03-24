@@ -79,6 +79,8 @@ This project is part of my journey to become a **Data Scientist**, showcasing th
 
 ## 🚀 How to Use
 
+**Repository:** [github.com/StephaneDurig/Jedha_FullStack_Data_Science](https://github.com/StephaneDurig/Jedha_FullStack_Data_Science)
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/StephaneDurig/Jedha_FullStack_Data_Science.git

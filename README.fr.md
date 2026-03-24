@@ -80,6 +80,8 @@ Ce projet fait partie de mon parcours de formation pour devenir **Data Scientist
 
 ## 🚀 Comment utiliser ce dépôt
 
+**Dépôt :** [github.com/StephaneDurig/Jedha_FullStack_Data_Science](https://github.com/StephaneDurig/Jedha_FullStack_Data_Science)
+
 1. Clonez le dépôt :
    ```bash
    git clone https://github.com/StephaneDurig/Jedha_FullStack_Data_Science.git
