@@ -1,0 +1,3 @@
+# Même version que le serveur MLflow HF (mlflow-server/requirements.txt).
+# pip install -r requirements-training.txt  puis redémarrer le kernel Jupyter.
+mlflow==2.21.3

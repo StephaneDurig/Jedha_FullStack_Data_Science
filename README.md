@@ -87,7 +87,7 @@ This project is part of my journey to become a **Data Scientist**, showcasing th
    cd Jedha_FullStack_Data_Science
    ```
 
-2. Explore the folders by module and topic (`01-Python_Programming`, `02-Exploratory_Data_Analysis`, `03-Data_Collection_and_Management`, `05-ML_Supervised`, `06-ML_Non_Supervised`, `07-Deep_Learning`, …)  
+2. Explore the folders by module and topic (`01-Python_Programming`, `02-Exploratory_Data_Analysis`, `03-Data_Collection_and_Management`, `05-ML_Supervised`, `06-ML_Non_Supervised`, `07-Deep_Learning`, `08-Deployment`, …)  
 3. Launch the `.ipynb` notebooks or `.py` scripts in your IDE
 
 <p align="right">

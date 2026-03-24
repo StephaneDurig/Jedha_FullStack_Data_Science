@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MLflow (régénérer les runs localement)
+**/mlruns/
+mlruns/
+
+# Environnements
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Fichiers de debug locaux
+debug*.log
