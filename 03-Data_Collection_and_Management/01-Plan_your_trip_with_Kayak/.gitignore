@@ -1,0 +1,28 @@
+# Secrets et environnement
+.env
+.env.*
+!.env.example
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Documentation personnelle (non versionnée)
+GUIDE_CHRONOLOGIQUE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Outils / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
