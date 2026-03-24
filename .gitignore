@@ -1,2 +1,21 @@
 Configuration.txt
 Cours*
+
+# OS
+.DS_Store
+
+# Jupyter / Python
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.zip
+
+# Secrets
+.env
+.env.*
+
+# Module 05 — fichier interne formation (non versionné)
+05-ML_Supervised/Grille de validation Bloc 3.txt
