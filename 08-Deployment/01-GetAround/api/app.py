@@ -1,14 +1,14 @@
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Literal
 
 from dotenv import load_dotenv
 
 import mlflow
 import pandas as pd
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 # Charge D99-PROJET/.env si présent (lancement depuis api/ ou racine du projet)
@@ -80,6 +80,9 @@ def _resolve_mlflow_tracking_uri() -> str:
 # ---------------------------------------------------------------------------
 MLFLOW_TRACKING_URI = _resolve_mlflow_tracking_uri()
 MLFLOW_RUN_ID = os.environ.get("MLFLOW_RUN_ID", "")
+MLFLOW_REGISTERED_MODEL = os.environ.get("MLFLOW_REGISTERED_MODEL", "").strip()
+MLFLOW_MODEL_ALIAS = os.environ.get("MLFLOW_MODEL_ALIAS", "").strip()
+MLFLOW_ARTIFACT_PATH = os.environ.get("MLFLOW_ARTIFACT_PATH", "getaround_pricing_model").strip()
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
@@ -100,78 +103,40 @@ ALL_FEATURES: List[str] = [
     "winter_tires",
 ]
 
-NUM_COLS = len(ALL_FEATURES)
-
-
-def _coerce_bool_feature(val: Any) -> int:
-    if isinstance(val, bool):
-        return int(val)
-    if isinstance(val, (int, float)):
-        return int(val)
-    s = str(val).lower().strip()
-    return 1 if s in ("1", "true", "yes") else 0
-
-
-def _parse_row(row: List[Any]) -> dict:
-    if len(row) != NUM_COLS:
-        raise ValueError(
-            f"Chaque ligne doit contenir {NUM_COLS} valeurs "
-            f"(ordre : {', '.join(ALL_FEATURES)})."
-        )
-    out = {}
-    for i, name in enumerate(ALL_FEATURES):
-        val = row[i]
-        if i < 4:
-            out[name] = str(val)
-        elif i < 6:
-            # MLflow impose souvent int64 pour mileage / engine_power (float64 → erreur de schéma).
-            out[name] = int(float(val))
-        else:
-            out[name] = _coerce_bool_feature(val)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Description de l'API (affichée dans /docs)
 # ---------------------------------------------------------------------------
-description = """
-# GetAround Pricing API
-
-Cette API prédit le **prix journalier** (€/jour) à partir des caractéristiques véhicule,
-via un pipeline sklearn + Gradient Boosting enregistré dans MLflow.
-
----
-
-## `POST /predict`
-
-Corps JSON attendu (clé **`input`** : une ou plusieurs lignes, chaque ligne est une liste
-de **13 valeurs** dans l’ordre ci-dessous — même ordre que le notebook d’entraînement) :
-
-1. `model_key` (texte)  
-2. `fuel` (texte)  
-3. `paint_color` (texte)  
-4. `car_type` (texte)  
-5. `mileage` (nombre)  
-6. `engine_power` (nombre)  
-7. à 13. booléens : `private_parking_available`, `has_gps`, `has_air_conditioning`,
-   `automatic_car`, `has_getaround_connect`, `has_speed_regulator`, `winter_tires`
-   (`true`/`false` ou `0`/`1`).
-
-**Réponse :** `{"prediction": [<prix>, ...]}` (un prix par ligne, nombres flottants).
-
-> L’énoncé du projet illustre aussi un exemple purement numérique (autre jeu de données).
-> Ici, les types ci-dessus correspondent au fichier `get_around_pricing_project.csv`.
-
----
-
-## `GET /docs`
-
-Documentation interactive (Swagger UI).
-"""
+description = (
+    "Prédit le **prix journalier** (€/jour) d'un véhicule GetAround à partir de "
+    "ses caractéristiques (marque, carburant, kilométrage, équipements…).\n\n"
+    "Modèle : pipeline `scikit-learn` + Gradient Boosting entraîné sur "
+    "`get_around_pricing_project.csv` et versionné dans MLflow "
+    "(`ZerphirosX/mlflow`)."
+)
 
 tags_metadata = [
-    {"name": "General", "description": "Statut de l’API."},
-    {"name": "Predictions", "description": "Prédictions de prix."},
+    {"name": "General", "description": "Statut de l'API et healthcheck."},
+    {"name": "Predictions", "description": "Prédictions de prix journalier."},
+]
+
+# ---------------------------------------------------------------------------
+# Types énumérés (valeurs issues de get_around_pricing_project.csv)
+# ---------------------------------------------------------------------------
+FuelType = Literal["diesel", "petrol", "hybrid_petrol", "electro"]
+PaintColor = Literal[
+    "beige", "black", "blue", "brown", "green",
+    "grey", "orange", "red", "silver", "white",
+]
+CarType = Literal[
+    "convertible", "coupe", "estate", "hatchback",
+    "sedan", "subcompact", "suv", "van",
+]
+ModelKey = Literal[
+    "Alfa Romeo", "Audi", "BMW", "Citroën", "Ferrari", "Fiat", "Ford",
+    "Honda", "KIA Motors", "Lamborghini", "Lexus", "Maserati", "Mazda",
+    "Mercedes", "Mini", "Mitsubishi", "Nissan", "Opel", "PGO", "Peugeot",
+    "Porsche", "Renault", "SEAT", "Subaru", "Suzuki", "Toyota",
+    "Volkswagen", "Yamaha",
 ]
 
 # Référence partagée (conteneur mutable) : évite les soucis de portée async/global et de request.app.state.
@@ -185,13 +150,38 @@ async def lifespan(app: FastAPI):
     On remplit un dict module (clé "model") + app.state pour redondance.
     """
     print(f"MLflow tracking URI (résolu) : {MLFLOW_TRACKING_URI}")
-    rid = (MLFLOW_RUN_ID or "").strip()
-    if not rid:
-        raise RuntimeError(
-            "MLFLOW_RUN_ID est vide. Renseignez-le dans .env (même ID que dans le notebook)."
-        )
-    logged_model = f"runs:/{rid}/getaround_pricing_model"
-    loaded = mlflow.pyfunc.load_model(logged_model)
+
+    # Ordre de résolution du modèle :
+    # 1. Model Registry via alias  (models:/<name>@<alias>)  → prod recommandée
+    # 2. Run ID                    (runs:/<run_id>/<artifact>) → fallback / dev
+    loaded = None
+    logged_model: str | None = None
+    last_error: Exception | None = None
+
+    if MLFLOW_REGISTERED_MODEL and MLFLOW_MODEL_ALIAS:
+        logged_model = f"models:/{MLFLOW_REGISTERED_MODEL}@{MLFLOW_MODEL_ALIAS}"
+        try:
+            loaded = mlflow.pyfunc.load_model(logged_model)
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"Chargement via Registry impossible ({logged_model}) : "
+                f"{type(exc).__name__} — {exc}. Tentative via MLFLOW_RUN_ID…"
+            )
+            loaded = None
+
+    if loaded is None:
+        rid = (MLFLOW_RUN_ID or "").strip()
+        if not rid:
+            raise RuntimeError(
+                "Impossible de charger le modèle : "
+                "définissez (MLFLOW_REGISTERED_MODEL + MLFLOW_MODEL_ALIAS) "
+                "ou MLFLOW_RUN_ID dans .env."
+                + (f" Dernière erreur Registry : {last_error}" if last_error else "")
+            )
+        logged_model = f"runs:/{rid}/{MLFLOW_ARTIFACT_PATH}"
+        loaded = mlflow.pyfunc.load_model(logged_model)
+
     if loaded is None:
         raise RuntimeError(
             "mlflow.pyfunc.load_model a renvoyé None. Pour un store local, utilisez un URI "
@@ -211,40 +201,201 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GetAround Pricing API",
+    summary="Prédiction du prix journalier (€/jour) d'un véhicule GetAround.",
     description=description,
     version="1.0.0",
     contact={
-        "name": "GetAround Data Science",
-        "url": "https://www.getaround.com",
+        "name": "ZerphirosX",
+        "url": "https://huggingface.co/ZerphirosX",
     },
     openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": 2,
+        "docExpansion": "list",
+        "displayRequestDuration": True,
+        "filter": True,
+        "tryItOutEnabled": True,
+        "persistAuthorization": True,
+    },
     lifespan=lifespan,
 )
 
 
-class PredictBody(BaseModel):
-    """Corps attendu : une clé `input` contenant une liste de lignes."""
+class Vehicle(BaseModel):
+    """Caractéristiques d'un véhicule GetAround (ordre aligné sur `ALL_FEATURES`)."""
 
-    input: List[List[Union[str, int, float, bool]]] = Field(
+    model_key: ModelKey = Field(..., description="Marque du véhicule.", examples=["Citroën"])
+    fuel: FuelType = Field(..., description="Type de carburant.", examples=["diesel"])
+    paint_color: PaintColor = Field(..., description="Couleur de la carrosserie.", examples=["black"])
+    car_type: CarType = Field(..., description="Type de carrosserie.", examples=["convertible"])
+    mileage: int = Field(..., ge=0, description="Kilométrage (km).", examples=[140411])
+    engine_power: int = Field(..., ge=0, description="Puissance moteur (ch).", examples=[100])
+    private_parking_available: bool = Field(..., description="Parking privé disponible.", examples=[True])
+    has_gps: bool = Field(..., description="GPS embarqué.", examples=[True])
+    has_air_conditioning: bool = Field(..., description="Climatisation.", examples=[False])
+    automatic_car: bool = Field(..., description="Boîte automatique.", examples=[False])
+    has_getaround_connect: bool = Field(..., description="Équipé GetAround Connect.", examples=[True])
+    has_speed_regulator: bool = Field(..., description="Régulateur de vitesse.", examples=[True])
+    winter_tires: bool = Field(..., description="Pneus hiver.", examples=[True])
+
+
+class PredictBody(BaseModel):
+    """Corps attendu : clé `input` contenant une ou plusieurs lignes véhicule."""
+
+    input: List[Vehicle] = Field(
         ...,
-        description="Liste de lignes ; chaque ligne = 13 valeurs dans l’ordre ALL_FEATURES.",
+        min_length=1,
+        description="Liste d'un ou plusieurs véhicules (mode batch supporté).",
     )
 
 
-@app.get("/", tags=["General"])
-async def root():
-    return {
-        "message": "Welcome to the GetAround Pricing API",
-        "status": "operational",
-        "docs": "/docs",
-        "predict": "/predict",
-    }
+# ---------------------------------------------------------------------------
+# Exemples nommés (affichés dans le dropdown "Try it out" de Swagger)
+# ---------------------------------------------------------------------------
+_EXAMPLE_CITADINE = {
+    "model_key": "Peugeot",
+    "fuel": "diesel",
+    "paint_color": "white",
+    "car_type": "hatchback",
+    "mileage": 85000,
+    "engine_power": 90,
+    "private_parking_available": True,
+    "has_gps": True,
+    "has_air_conditioning": True,
+    "automatic_car": False,
+    "has_getaround_connect": False,
+    "has_speed_regulator": True,
+    "winter_tires": False,
+}
+
+_EXAMPLE_SUV_HYBRIDE = {
+    "model_key": "Mercedes",
+    "fuel": "hybrid_petrol",
+    "paint_color": "black",
+    "car_type": "suv",
+    "mileage": 32000,
+    "engine_power": 210,
+    "private_parking_available": True,
+    "has_gps": True,
+    "has_air_conditioning": True,
+    "automatic_car": True,
+    "has_getaround_connect": True,
+    "has_speed_regulator": True,
+    "winter_tires": True,
+}
+
+_EXAMPLE_SPORTIVE = {
+    "model_key": "Porsche",
+    "fuel": "petrol",
+    "paint_color": "red",
+    "car_type": "coupe",
+    "mileage": 18000,
+    "engine_power": 380,
+    "private_parking_available": True,
+    "has_gps": True,
+    "has_air_conditioning": True,
+    "automatic_car": True,
+    "has_getaround_connect": True,
+    "has_speed_regulator": True,
+    "winter_tires": False,
+}
+
+PREDICT_EXAMPLES = {
+    "citadine_diesel": {
+        "summary": "Citadine diesel économique (Peugeot hatchback)",
+        "description": "Cas courant : petite voiture urbaine à prix modéré.",
+        "value": {"input": [_EXAMPLE_CITADINE]},
+    },
+    "suv_hybride": {
+        "summary": "SUV hybride premium (Mercedes)",
+        "description": "Segment premium, équipements complets, kilométrage faible.",
+        "value": {"input": [_EXAMPLE_SUV_HYBRIDE]},
+    },
+    "sportive_essence": {
+        "summary": "Sportive essence haute puissance (Porsche coupé)",
+        "description": "Véhicule haut de gamme, moteur puissant.",
+        "value": {"input": [_EXAMPLE_SPORTIVE]},
+    },
+    "batch_3_vehicules": {
+        "summary": "Prédiction en batch (3 véhicules)",
+        "description": "Envoie plusieurs véhicules en une seule requête.",
+        "value": {
+            "input": [_EXAMPLE_CITADINE, _EXAMPLE_SUV_HYBRIDE, _EXAMPLE_SPORTIVE]
+        },
+    },
+}
 
 
-@app.post("/predict", tags=["Predictions"])
-async def predict(body: PredictBody, request: Request):
+class PredictResponse(BaseModel):
+    """Réponse de `/predict` : un prix par ligne d'entrée."""
+
+    prediction: List[float] = Field(
+        ...,
+        description="Prix journaliers prédits (€/jour), arrondis à 2 décimales.",
+        examples=[[145.23, 198.70]],
+    )
+
+
+class HealthResponse(BaseModel):
+    """Réponse de `/` : statut de l'API et pointeurs utiles."""
+
+    message: str = Field(..., examples=["Welcome to the GetAround Pricing API"])
+    status: Literal["operational", "degraded"] = Field(..., examples=["operational"])
+    model_loaded: bool = Field(..., examples=[True])
+    docs: str = Field(..., examples=["/docs"])
+    predict: str = Field(..., examples=["/predict"])
+
+
+class ErrorDetail(BaseModel):
+    """Format standard d'erreur renvoyé par FastAPI."""
+
+    detail: str = Field(..., examples=["Le champ 'input' ne doit pas être vide."])
+
+
+@app.get(
+    "/",
+    tags=["General"],
+    summary="Statut de l'API",
+    response_model=HealthResponse,
+    responses={200: {"description": "L'API est joignable."}},
+)
+async def root(request: Request) -> HealthResponse:
+    """Healthcheck minimal : indique si le modèle MLflow est chargé."""
+    model = _PYFUNC_MODEL.get("model") or getattr(
+        request.app.state, "pricing_model", None
+    )
+    return HealthResponse(
+        message="Welcome to the GetAround Pricing API",
+        status="operational" if model is not None else "degraded",
+        model_loaded=model is not None,
+        docs="/docs",
+        predict="/predict",
+    )
+
+
+@app.post(
+    "/predict",
+    tags=["Predictions"],
+    summary="Prédire le prix journalier",
+    response_model=PredictResponse,
+    responses={
+        422: {"model": ErrorDetail, "description": "Payload invalide (types ou valeurs)."},
+        503: {"model": ErrorDetail, "description": "Modèle MLflow non chargé."},
+    },
+)
+async def predict(
+    request: Request,
+    body: PredictBody = Body(..., openapi_examples=PREDICT_EXAMPLES),
+) -> PredictResponse:
     """
-    Prédit le prix journalier pour une ou plusieurs lignes (format `input` de l’énoncé).
+    Prédit le prix journalier (€/jour) pour un ou plusieurs véhicules.
+
+    Chaque élément de `input` est un objet **`Vehicle`** avec 13 champs nommés
+    (voir le schéma plus bas). Les champs catégoriels (`model_key`, `fuel`,
+    `paint_color`, `car_type`) sont contraints aux valeurs apprises par le modèle.
     """
     model = _PYFUNC_MODEL.get("model") or getattr(
         request.app.state, "pricing_model", None
@@ -255,18 +406,16 @@ async def predict(body: PredictBody, request: Request):
             detail="Modèle non chargé. Vérifiez les logs au démarrage.",
         )
 
-    if not body.input:
-        raise HTTPException(status_code=422, detail="Le champ 'input' ne doit pas être vide.")
+    input_df = pd.DataFrame([v.model_dump() for v in body.input])
+    # Le pipeline MLflow est entraîné avec des int64 pour les colonnes numériques
+    # et les booléens encodés en 0/1 : on normalise avant predict().
+    for col in ALL_FEATURES[6:]:
+        input_df[col] = input_df[col].astype(int)
+    for col in ("mileage", "engine_power"):
+        input_df[col] = input_df[col].astype(int)
 
-    try:
-        rows_dict = [_parse_row(list(row)) for row in body.input]
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    input_df = pd.DataFrame(rows_dict)
     preds = model.predict(input_df)
-    prediction_list = [round(float(p), 2) for p in preds]
-    return {"prediction": prediction_list}
+    return PredictResponse(prediction=[round(float(p), 2) for p in preds])
 
 
 if __name__ == "__main__":

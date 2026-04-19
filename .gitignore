@@ -16,6 +16,9 @@ env/
 # Secrets
 .env
 .env.*
+# Exception : garder les templates .env.example des projets
+!**/.env.example
+!08-Deployment/01-GetAround/.env.example
 
 # Module 05 — fichier interne formation (non versionné)
 05-ML_Supervised/Grille de validation Bloc 3.txt

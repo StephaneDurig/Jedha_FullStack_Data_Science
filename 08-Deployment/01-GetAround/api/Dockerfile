@@ -22,7 +22,11 @@ COPY requirements.txt /requirements.txt
 RUN pip install -r /requirements.txt
 
 # Variables d'environnement MLflow (injectées via HF Spaces Secrets)
+# Chargement modèle : priorité au Model Registry (alias), sinon fallback sur RUN_ID.
 ENV MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI
+ENV MLFLOW_REGISTERED_MODEL=$MLFLOW_REGISTERED_MODEL
+ENV MLFLOW_MODEL_ALIAS=$MLFLOW_MODEL_ALIAS
+ENV MLFLOW_ARTIFACT_PATH=$MLFLOW_ARTIFACT_PATH
 ENV MLFLOW_RUN_ID=$MLFLOW_RUN_ID
 
 # HF injecte souvent PORT ; défaut 7860 si absent (évite --port sans valeur).

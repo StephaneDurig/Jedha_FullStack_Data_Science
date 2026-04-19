@@ -377,7 +377,7 @@ st.markdown(
     """
     Le dashboard principal porte sur les **retards**. Le modèle de **prix optimal** est servi par
     une API FastAPI déployée séparément. Vous pouvez tester ici un appel `POST /predict` avec le
-    format `input` (liste de lignes) décrit dans le README du projet.
+    format `input` (liste d'objets véhicule) décrit dans le README du projet.
     """
 )
 
@@ -388,21 +388,21 @@ api_base = st.text_input(
 
 example_payload = {
     "input": [
-        [
-            "Citroën",
-            "diesel",
-            "black",
-            "convertible",
-            140411,
-            100,
-            True,
-            True,
-            False,
-            False,
-            True,
-            True,
-            True,
-        ]
+        {
+            "model_key": "Citroën",
+            "fuel": "diesel",
+            "paint_color": "black",
+            "car_type": "convertible",
+            "mileage": 140411,
+            "engine_power": 100,
+            "private_parking_available": True,
+            "has_gps": True,
+            "has_air_conditioning": False,
+            "automatic_car": False,
+            "has_getaround_connect": True,
+            "has_speed_regulator": True,
+            "winter_tires": True,
+        }
     ]
 }
 
